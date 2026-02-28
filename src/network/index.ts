@@ -11,10 +11,10 @@ export {
   type SecureFetchOptions,
 } from "./fetch.js";
 
-export {
-  type NetworkPolicy,
-  type NetworkPolicyRule,
-  type NetworkTransformer,
+export type {
+  NetworkPolicy,
+  NetworkPolicyRule,
+  NetworkTransformer,
 } from "./network-policy.js";
 
 export {

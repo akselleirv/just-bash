@@ -3,6 +3,7 @@ import { Bash } from "../Bash.js";
 import { Sandbox } from "../sandbox/Sandbox.js";
 import { SecureFetchManager } from "./fetch.js";
 import {
+  type NetworkPolicy,
   networkPolicyToConfig,
   resolveNetworkPolicy,
 } from "./network-policy.js";
@@ -383,6 +384,47 @@ describe("Sandbox.updateNetworkPolicy() with NetworkPolicy", () => {
     const cmd = await sandbox.runCommand("curl --help");
     const stdout = await cmd.stdout();
     expect(stdout).toContain("curl");
+  });
+
+  it("returns the policy that was set", async () => {
+    const sandbox = await Sandbox.create({
+      networkPolicy: "allow-all",
+    });
+
+    const returned = sandbox.updateNetworkPolicy("deny-all");
+    expect(returned).toBe("deny-all");
+
+    const objPolicy: NetworkPolicy = {
+      allow: ["example.com"],
+    };
+    const returned2 = sandbox.updateNetworkPolicy(objPolicy);
+    expect(returned2).toBe(objPolicy);
+  });
+
+  it("accepts an AbortSignal option", async () => {
+    const sandbox = await Sandbox.create({
+      networkPolicy: "allow-all",
+    });
+
+    const controller = new AbortController();
+    const returned = sandbox.updateNetworkPolicy("deny-all", {
+      signal: controller.signal,
+    });
+    expect(returned).toBe("deny-all");
+  });
+
+  it("throws if signal is already aborted", async () => {
+    const sandbox = await Sandbox.create({
+      networkPolicy: "allow-all",
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    expect(() =>
+      sandbox.updateNetworkPolicy("deny-all", {
+        signal: controller.signal,
+      }),
+    ).toThrow();
   });
 });
 

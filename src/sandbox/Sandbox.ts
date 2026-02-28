@@ -192,13 +192,20 @@ export class Sandbox {
    * });
    * ```
    */
-  updateNetworkPolicy(policy: NetworkPolicy): void {
+  updateNetworkPolicy(
+    policy: NetworkPolicy,
+    opts?: { signal?: AbortSignal },
+  ): NetworkPolicy {
+    opts?.signal?.throwIfAborted();
+
     const config = networkPolicyToConfig(policy);
     this.bashEnv.updateNetworkPolicy(config);
 
     // Update transform rules
     const resolved = resolveNetworkPolicy(policy);
     this.bashEnv.setTransformRules(resolved.transformRules);
+
+    return policy;
   }
 
   async stop(): Promise<void> {
