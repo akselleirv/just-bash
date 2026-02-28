@@ -7,7 +7,7 @@
  * 3. Provides timeout support
  */
 
-import { isUrlAllowed } from "./allow-list.js";
+import { isDomainAllowed, isUrlAllowed } from "./allow-list.js";
 import {
   type FetchResult,
   type HttpMethod,
@@ -52,63 +52,119 @@ export type SecureFetch = (
 ) => Promise<FetchResult>;
 
 /**
- * Creates a secure fetch function that enforces the allow-list.
+ * Manages a secure fetch function with updatable network policy.
+ * Allows dynamic updates to the network configuration without recreating the fetch function.
  */
-export function createSecureFetch(config: NetworkConfig): SecureFetch {
-  const maxRedirects = config.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxResponseSize = config.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE;
-  const allowedMethods = config.dangerouslyAllowFullInternetAccess
-    ? ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-    : (config.allowedMethods ?? DEFAULT_ALLOWED_METHODS);
+export class SecureFetchManager {
+  private config: NetworkConfig;
 
-  /**
-   * Checks if a URL is allowed by the configuration.
-   * @throws NetworkAccessDeniedError if the URL is not allowed
-   */
-  function checkAllowed(url: string): void {
-    if (config.dangerouslyAllowFullInternetAccess) {
-      return;
-    }
-
-    if (!isUrlAllowed(url, config.allowedUrlPrefixes ?? [])) {
-      throw new NetworkAccessDeniedError(url);
-    }
+  constructor(config: NetworkConfig) {
+    this.config = config;
   }
 
   /**
-   * Checks if an HTTP method is allowed by the configuration.
-   * @throws MethodNotAllowedError if the method is not allowed
+   * Updates the network configuration.
+   * Takes effect immediately for subsequent fetch calls.
    */
-  function checkMethodAllowed(method: string): void {
-    if (config.dangerouslyAllowFullInternetAccess) {
+  updateConfig(config: NetworkConfig): void {
+    this.config = config;
+  }
+
+  /**
+   * Returns the current network configuration.
+   */
+  getConfig(): NetworkConfig {
+    return this.config;
+  }
+
+  private getEffectiveAllowedMethods(): string[] {
+    return this.config.dangerouslyAllowFullInternetAccess
+      ? ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+      : (this.config.allowedMethods ?? DEFAULT_ALLOWED_METHODS);
+  }
+
+  /**
+   * Checks if a URL is allowed by the current configuration.
+   * A URL is allowed if it matches either allowedUrlPrefixes OR allowedDomains.
+   */
+  private checkAllowed(url: string): void {
+    if (this.config.dangerouslyAllowFullInternetAccess) {
+      return;
+    }
+
+    if (isUrlAllowed(url, this.config.allowedUrlPrefixes ?? [])) {
+      return;
+    }
+
+    if (isDomainAllowed(url, this.config.allowedDomains ?? [])) {
+      return;
+    }
+
+    throw new NetworkAccessDeniedError(url);
+  }
+
+  /**
+   * Checks if an HTTP method is allowed by the current configuration.
+   */
+  private checkMethodAllowed(method: string): void {
+    if (this.config.dangerouslyAllowFullInternetAccess) {
       return;
     }
 
     const upperMethod = method.toUpperCase();
-    if (!allowedMethods.includes(upperMethod as HttpMethod)) {
+    const allowedMethods = this.getEffectiveAllowedMethods();
+    if (!allowedMethods.includes(upperMethod)) {
       throw new MethodNotAllowedError(upperMethod, allowedMethods);
     }
   }
 
   /**
-   * Performs a fetch with allow-list enforcement and manual redirect handling.
+   * Checks if a redirect URL is allowed by the current configuration.
    */
-  async function secureFetch(
+  private checkRedirectAllowed(redirectUrl: string): void {
+    if (this.config.dangerouslyAllowFullInternetAccess) {
+      return;
+    }
+
+    const urlAllowed = isUrlAllowed(
+      redirectUrl,
+      this.config.allowedUrlPrefixes ?? [],
+    );
+    const domainAllowed = isDomainAllowed(
+      redirectUrl,
+      this.config.allowedDomains ?? [],
+    );
+    if (!urlAllowed && !domainAllowed) {
+      throw new RedirectNotAllowedError(redirectUrl);
+    }
+  }
+
+  /**
+   * Creates the secure fetch function bound to this manager.
+   */
+  createFetch(): SecureFetch {
+    return (url: string, options?: SecureFetchOptions) =>
+      this.fetch(url, options);
+  }
+
+  private async fetch(
     url: string,
     options: SecureFetchOptions = {},
   ): Promise<FetchResult> {
     const method = options.method?.toUpperCase() ?? "GET";
+    const maxRedirects = this.config.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+    const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxResponseSize =
+      this.config.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE;
 
     // Check if URL and method are allowed
-    checkAllowed(url);
-    checkMethodAllowed(method);
+    this.checkAllowed(url);
+    this.checkMethodAllowed(method);
 
     let currentUrl = url;
     let redirectCount = 0;
     const followRedirects = options.followRedirects ?? true;
 
-    // Use per-request timeout if specified, but cap at global timeout
     const effectiveTimeout =
       options.timeoutMs !== undefined
         ? Math.min(options.timeoutMs, timeoutMs)
@@ -123,21 +179,18 @@ export function createSecureFetch(config: NetworkConfig): SecureFetch {
           method,
           headers: options.headers,
           signal: controller.signal,
-          redirect: "manual", // Handle redirects manually to check allow-list
+          redirect: "manual",
         };
 
-        // Only include body for methods that support it
         if (options.body && !BODYLESS_METHODS.has(method)) {
           fetchOptions.body = options.body;
         }
 
         const response = await fetch(currentUrl, fetchOptions);
 
-        // Check for redirects
         if (REDIRECT_CODES.has(response.status) && followRedirects) {
           const location = response.headers.get("location");
           if (!location) {
-            // No location header, return the response as-is
             return await responseToResult(
               response,
               currentUrl,
@@ -145,15 +198,8 @@ export function createSecureFetch(config: NetworkConfig): SecureFetch {
             );
           }
 
-          // Resolve relative URLs
           const redirectUrl = new URL(location, currentUrl).href;
-
-          // Check if redirect target is allowed
-          if (!config.dangerouslyAllowFullInternetAccess) {
-            if (!isUrlAllowed(redirectUrl, config.allowedUrlPrefixes ?? [])) {
-              throw new RedirectNotAllowedError(redirectUrl);
-            }
-          }
+          this.checkRedirectAllowed(redirectUrl);
 
           redirectCount++;
           if (redirectCount > maxRedirects) {
@@ -170,8 +216,16 @@ export function createSecureFetch(config: NetworkConfig): SecureFetch {
       }
     }
   }
+}
 
-  return secureFetch;
+/**
+ * Creates a SecureFetchManager for dynamic network policy management.
+ * Use this when you need to update network policies at runtime.
+ */
+export function createSecureFetchManager(
+  config: NetworkConfig,
+): SecureFetchManager {
+  return new SecureFetchManager(config);
 }
 
 /**

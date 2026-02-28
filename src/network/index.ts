@@ -5,8 +5,9 @@
  */
 
 export {
-  createSecureFetch,
+  createSecureFetchManager,
   type SecureFetch,
+  SecureFetchManager,
   type SecureFetchOptions,
 } from "./fetch.js";
 

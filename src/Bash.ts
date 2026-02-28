@@ -41,9 +41,10 @@ import {
 } from "./interpreter/index.js";
 import { type ExecutionLimits, resolveLimits } from "./limits.js";
 import {
-  createSecureFetch,
+  createSecureFetchManager,
   type NetworkConfig,
   type SecureFetch,
+  type SecureFetchManager,
 } from "./network/index.js";
 import { LexerError } from "./parser/lexer.js";
 import { type ParseException, parse } from "./parser/parser.js";
@@ -217,6 +218,7 @@ export class Bash {
   private useDefaultLayout: boolean = false;
   private limits: Required<ExecutionLimits>;
   private secureFetch?: SecureFetch;
+  private secureFetchManager?: SecureFetchManager;
   private sleepFn?: (ms: number) => Promise<void>;
   private traceFn?: TraceCallback;
   private logger?: BashLogger;
@@ -267,7 +269,8 @@ export class Bash {
 
     // Create secure fetch if network is configured
     if (options.network) {
-      this.secureFetch = createSecureFetch(options.network);
+      this.secureFetchManager = createSecureFetchManager(options.network);
+      this.secureFetch = this.secureFetchManager.createFetch();
     }
 
     // Store sleep function if provided (for mock clocks in testing)
@@ -683,6 +686,27 @@ export class Bash {
 
   getEnv(): Record<string, string> {
     return mapToRecord(this.state.env);
+  }
+
+  /**
+   * Updates the network policy at runtime.
+   * Takes effect immediately for subsequent network requests.
+   *
+   * If network was not initially configured, this enables network access
+   * and registers network commands (e.g., curl).
+   */
+  updateNetworkPolicy(config: NetworkConfig): void {
+    if (this.secureFetchManager) {
+      // Update existing manager — subsequent fetches use the new config
+      this.secureFetchManager.updateConfig(config);
+    } else {
+      // Network not previously configured — create manager and register commands
+      this.secureFetchManager = createSecureFetchManager(config);
+      this.secureFetch = this.secureFetchManager.createFetch();
+      for (const cmd of createNetworkCommands()) {
+        this.registerCommand(cmd);
+      }
+    }
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: accepts any plugin for untyped API

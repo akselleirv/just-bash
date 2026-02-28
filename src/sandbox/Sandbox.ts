@@ -111,6 +111,20 @@ export class Sandbox {
     await this.bashEnv.exec(`mkdir ${flags} ${path}`);
   }
 
+  /**
+   * Updates the network policy at runtime.
+   * Takes effect immediately for subsequent network requests.
+   *
+   * This enables dynamic network policy management, similar to Vercel Sandbox:
+   * - Start with full access to install dependencies
+   * - Lock down before executing untrusted code
+   * - Re-open to stream results
+   * - Air-gap again with deny-all
+   */
+  updateNetworkPolicy(config: NetworkConfig): void {
+    this.bashEnv.updateNetworkPolicy(config);
+  }
+
   async stop(): Promise<void> {
     // No-op for local simulation
   }

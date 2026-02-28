@@ -41,6 +41,18 @@ export interface NetworkConfig {
   allowedUrlPrefixes?: string[];
 
   /**
+   * List of allowed domains for network access.
+   * Supports wildcard subdomains with the `*.` prefix:
+   * - "example.com" - matches only example.com (any scheme, any path)
+   * - "*.example.com" - matches any subdomain of example.com (e.g., api.example.com)
+   *   but NOT example.com itself
+   *
+   * This provides simpler domain-level filtering compared to allowedUrlPrefixes.
+   * A URL is allowed if it matches either allowedUrlPrefixes OR allowedDomains.
+   */
+  allowedDomains?: string[];
+
+  /**
    * List of allowed HTTP methods. Defaults to ["GET", "HEAD"] for safety.
    * dangerouslyAllowFullInternetAccess to enables all methods.
    */
