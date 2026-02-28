@@ -7,7 +7,12 @@
  * 3. Provides timeout support
  */
 
-import { isDomainAllowed, isUrlAllowed } from "./allow-list.js";
+import {
+  isDomainAllowed,
+  isUrlAllowed,
+  matchesDomainEntry,
+} from "./allow-list.js";
+import type { ResolvedTransformRule } from "./network-policy.js";
 import {
   type FetchResult,
   type HttpMethod,
@@ -57,6 +62,7 @@ export type SecureFetch = (
  */
 export class SecureFetchManager {
   private config: NetworkConfig;
+  private transformRules: ResolvedTransformRule[] = [];
 
   constructor(config: NetworkConfig) {
     this.config = config;
@@ -75,6 +81,21 @@ export class SecureFetchManager {
    */
   getConfig(): NetworkConfig {
     return this.config;
+  }
+
+  /**
+   * Sets per-domain header injection rules (credentials brokering).
+   * Headers are injected at the fetch layer — secrets never enter the sandbox scope.
+   */
+  setTransformRules(rules: ResolvedTransformRule[]): void {
+    this.transformRules = rules;
+  }
+
+  /**
+   * Returns the current transform rules.
+   */
+  getTransformRules(): ResolvedTransformRule[] {
+    return this.transformRules;
   }
 
   private getEffectiveAllowedMethods(): string[] {
@@ -140,6 +161,41 @@ export class SecureFetchManager {
   }
 
   /**
+   * Resolves headers to inject for a given URL based on transform rules.
+   * Matches domain patterns (including wildcards) and merges all matching headers.
+   * Later rules override earlier ones for the same header name.
+   */
+  private resolveTransformHeaders(url: string): Record<string, string> | null {
+    if (this.transformRules.length === 0) {
+      return null;
+    }
+
+    let hostname: string;
+    try {
+      hostname = new URL(url).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+
+    const merged: Record<string, string> = Object.create(null);
+    let hasHeaders = false;
+
+    for (const rule of this.transformRules) {
+      // "*" matches all domains
+      const matches =
+        rule.domain === "*" || matchesDomainEntry(hostname, rule.domain);
+      if (matches) {
+        for (const [key, value] of Object.entries(rule.headers)) {
+          merged[key] = value;
+          hasHeaders = true;
+        }
+      }
+    }
+
+    return hasHeaders ? merged : null;
+  }
+
+  /**
    * Creates the secure fetch function bound to this manager.
    */
   createFetch(): SecureFetch {
@@ -175,9 +231,21 @@ export class SecureFetchManager {
       const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
       try {
+        // Merge user headers with injected transform headers.
+        // Transform headers are applied AFTER user headers, so they always win.
+        // This prevents sandbox code from overriding brokered credentials.
+        let mergedHeaders: Record<string, string> | undefined = options.headers;
+        const transformHeaders = this.resolveTransformHeaders(currentUrl);
+        if (transformHeaders) {
+          mergedHeaders = {
+            ...(options.headers ?? {}),
+            ...transformHeaders,
+          };
+        }
+
         const fetchOptions: RequestInit = {
           method,
-          headers: options.headers,
+          headers: mergedHeaders,
           signal: controller.signal,
           redirect: "manual",
         };

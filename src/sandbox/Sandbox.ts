@@ -2,6 +2,11 @@ import { Bash } from "../Bash.js";
 import type { IFileSystem } from "../fs/interface.js";
 import { OverlayFs } from "../fs/overlay-fs/index.js";
 import type { NetworkConfig } from "../network/index.js";
+import type { NetworkPolicy } from "../network/network-policy.js";
+import {
+  networkPolicyToConfig,
+  resolveNetworkPolicy,
+} from "../network/network-policy.js";
 import type { CommandFinished } from "./Command.js";
 import { Command } from "./Command.js";
 
@@ -25,10 +30,38 @@ export interface SandboxOptions {
   maxCommandCount?: number;
   maxLoopIterations?: number;
   /**
-   * Network configuration for commands like curl.
-   * Network access is disabled by default - you must explicitly configure allowed URLs.
+   * Low-level network configuration for commands like curl.
+   * Network access is disabled by default.
+   *
+   * Prefer `networkPolicy` for the Vercel Sandbox-compatible API.
+   * Cannot be used together with `networkPolicy`.
    */
   network?: NetworkConfig;
+  /**
+   * Network policy using the Vercel Sandbox-compatible interface.
+   * Supports domain-based filtering, credentials brokering via per-domain
+   * header injection, and simple "allow-all"/"deny-all" modes.
+   *
+   * Cannot be used together with `network`.
+   *
+   * @example
+   * ```ts
+   * const sandbox = await Sandbox.create({
+   *   networkPolicy: {
+   *     allow: {
+   *       "ai-gateway.vercel.sh": [{
+   *         transform: [{ headers: { Authorization: `Bearer ${token}` } }],
+   *       }],
+   *       "*.github.com": [{
+   *         transform: [{ headers: { Authorization: `Bearer ${ghToken}` } }],
+   *       }],
+   *       "*": [], // Allow all other domains
+   *     },
+   *   },
+   * });
+   * ```
+   */
+  networkPolicy?: NetworkPolicy;
 }
 
 export interface WriteFilesInput {
@@ -43,6 +76,12 @@ export class Sandbox {
   }
 
   static async create(opts?: SandboxOptions): Promise<Sandbox> {
+    if (opts?.network && opts?.networkPolicy) {
+      throw new Error(
+        "Cannot specify both 'network' and 'networkPolicy' options",
+      );
+    }
+
     // Determine filesystem: overlayRoot creates an OverlayFs, otherwise use provided fs
     let fs: IFileSystem | undefined = opts?.fs;
     if (opts?.overlayRoot) {
@@ -50,6 +89,12 @@ export class Sandbox {
         throw new Error("Cannot specify both 'fs' and 'overlayRoot' options");
       }
       fs = new OverlayFs({ root: opts.overlayRoot });
+    }
+
+    // Resolve network config from either low-level or policy-level option
+    let networkConfig: NetworkConfig | undefined = opts?.network;
+    if (opts?.networkPolicy) {
+      networkConfig = networkPolicyToConfig(opts.networkPolicy);
     }
 
     const bashEnv = new Bash({
@@ -60,8 +105,17 @@ export class Sandbox {
       maxCallDepth: opts?.maxCallDepth,
       maxCommandCount: opts?.maxCommandCount,
       maxLoopIterations: opts?.maxLoopIterations,
-      network: opts?.network,
+      network: networkConfig,
     });
+
+    // Apply transform rules if networkPolicy has them
+    if (opts?.networkPolicy) {
+      const resolved = resolveNetworkPolicy(opts.networkPolicy);
+      if (resolved.transformRules.length > 0) {
+        bashEnv.setTransformRules(resolved.transformRules);
+      }
+    }
+
     return new Sandbox(bashEnv);
   }
 
@@ -115,14 +169,36 @@ export class Sandbox {
    * Updates the network policy at runtime.
    * Takes effect immediately for subsequent network requests.
    *
-   * This enables dynamic network policy management, similar to Vercel Sandbox:
-   * - Start with full access to install dependencies
-   * - Lock down before executing untrusted code
-   * - Re-open to stream results
-   * - Air-gap again with deny-all
+   * Accepts the Vercel Sandbox-compatible NetworkPolicy type:
+   * - `"allow-all"`: Full internet access
+   * - `"deny-all"`: No internet access
+   * - `{ allow: ... }`: Custom domain-based rules with optional credentials brokering
+   *
+   * @example
+   * ```ts
+   * // Start with full access to install dependencies
+   * sandbox.updateNetworkPolicy("allow-all");
+   *
+   * // Lock down before executing untrusted code
+   * sandbox.updateNetworkPolicy("deny-all");
+   *
+   * // Reallow with credentials brokering
+   * sandbox.updateNetworkPolicy({
+   *   allow: {
+   *     "ai-gateway.vercel.sh": [{
+   *       transform: [{ headers: { Authorization: `Bearer ${token}` } }],
+   *     }],
+   *   },
+   * });
+   * ```
    */
-  updateNetworkPolicy(config: NetworkConfig): void {
+  updateNetworkPolicy(policy: NetworkPolicy): void {
+    const config = networkPolicyToConfig(policy);
     this.bashEnv.updateNetworkPolicy(config);
+
+    // Update transform rules
+    const resolved = resolveNetworkPolicy(policy);
+    this.bashEnv.setTransformRules(resolved.transformRules);
   }
 
   async stop(): Promise<void> {

@@ -12,6 +12,12 @@ export {
 } from "./fetch.js";
 
 export {
+  type NetworkPolicy,
+  type NetworkPolicyRule,
+  type NetworkTransformer,
+} from "./network-policy.js";
+
+export {
   type FetchResult,
   type HttpMethod,
   NetworkAccessDeniedError,

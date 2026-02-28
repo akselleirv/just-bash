@@ -46,6 +46,7 @@ import {
   type SecureFetch,
   type SecureFetchManager,
 } from "./network/index.js";
+import type { ResolvedTransformRule } from "./network/network-policy.js";
 import { LexerError } from "./parser/lexer.js";
 import { type ParseException, parse } from "./parser/parser.js";
 import {
@@ -706,6 +707,19 @@ export class Bash {
       for (const cmd of createNetworkCommands()) {
         this.registerCommand(cmd);
       }
+    }
+  }
+
+  /**
+   * Sets per-domain header injection rules (credentials brokering).
+   * Headers are injected at the fetch layer — secrets never enter the sandbox scope.
+   *
+   * This is typically called by Sandbox.updateNetworkPolicy() after resolving
+   * the NetworkPolicy transform rules.
+   */
+  setTransformRules(rules: ResolvedTransformRule[]): void {
+    if (this.secureFetchManager) {
+      this.secureFetchManager.setTransformRules(rules);
     }
   }
 
